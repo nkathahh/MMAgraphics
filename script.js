@@ -11,6 +11,9 @@ let lives = 3;
 let gameOver = false;
 let gameStarted = false;
 let speed = 2;
+let paused = false;
+let shiftPressed = false;        
+let newHighScoreAchieved = false; 
 
 // Audio sources
 const catchSound = new Audio("https://actions.google.com/sounds/v1/cartoon/pop.ogg");
@@ -27,19 +30,28 @@ const basket = {
     dx: 0
 };
 
-// Object 2 & 3: Dynamic dropping objects and UI feedback track arrays
+// Object 2 & 3: Dynamic dropping objects, UI feedback track arrays, and particles
 const objects = [];
 const popups = [];
+const particles = []; 
 
 // Input handling (Application Stage)
 document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft") basket.dx = -basket.speed;
     if (e.key === "ArrowRight") basket.dx = basket.speed;
     if (e.key === " ") gameStarted = true;
+    if (e.key === "Shift") shiftPressed = true; // Activate Turbo Boost
+
+    if (e.key === "p" || e.key === "P") {
+        if (gameStarted && !gameOver) {
+            paused = !paused;
+        }
+    }
 });
 
 document.addEventListener("keyup", (e) => {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") basket.dx = 0;
+    if (e.key === "Shift") shiftPressed = false; // Deactivate Turbo Boost
 });
 
 function createObject() {
@@ -71,9 +83,25 @@ setInterval(() => {
 /*2. GEOMETRY STAGE
    Handling tracking coordinates, collisions, and matrix math (translations/rotations)*/
 
+// Helper logic to generate random vectors for exploding bits
+function spawnExplosion(x, y, color) {
+    for (let i = 0; i < 12; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            dx: (Math.random() - 0.5) * 6,
+            dy: (Math.random() - 0.5) * 6,
+            radius: Math.random() * 3 + 1,
+            color: color,
+            timer: 20 // frame lifetime
+        });
+    }
+}
+
 function update() {
-    // Modify player model coordinates
-    basket.x += basket.dx;
+    // Modify player model coordinates (Apply Turbo Boost calculation)
+    let currentMultiplier = shiftPressed ? 1.8 : 1;
+    basket.x += basket.dx * currentMultiplier;
 
     // Viewport clamping (keeping basket inside canvas)
     if (basket.x < 0) basket.x = 0;
@@ -84,6 +112,14 @@ function update() {
         popups[i].y -= 1;
         popups[i].timer -= 1;
         if (popups[i].timer <= 0) popups.splice(i, 1);
+    }
+
+    // Transform and update geometry positions for particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+        particles[i].x += particles[i].dx;
+        particles[i].y += particles[i].dy;
+        particles[i].timer -= 1;
+        if (particles[i].timer <= 0) particles.splice(i, 1);
     }
 
     // Process coordinates for falling objects
@@ -101,10 +137,12 @@ function update() {
             if (obj.type === "fruit") {
                 score += 10;
                 catchSound.play();
-                popups.push({ x: obj.x, y: basket.y - 10, timer: 30 }); // Store popup vector coordinate
+                popups.push({ x: obj.x, y: basket.y - 10, timer: 30 });
+                spawnExplosion(obj.x, obj.y, obj.color);
             } else {
                 lives--;
                 bombSound.play();
+                spawnExplosion(obj.x, obj.y, "red"); 
             }
             objects.splice(i, 1);
             continue;
@@ -118,6 +156,16 @@ function update() {
     }
 
     speed += 0.0005;
+
+    let currentHighScore = localStorage.getItem("highscore") || 0;
+    
+    if (score > currentHighScore && currentHighScore > 0) {
+        newHighScoreAchieved = true;
+    }
+
+    if (score > currentHighScore) {
+        localStorage.setItem("highscore", score);
+    }
 
     if (lives <= 0 && !gameOver) {
         gameOver = true;
@@ -165,6 +213,7 @@ function drawObjects() {
             ctx.shadowBlur = 15;
             ctx.shadowColor = "red";
 
+            // Drawing bomb body primitive
             ctx.beginPath();
             ctx.fillStyle = "black";
             ctx.arc(0, 0, obj.radius, 0, Math.PI * 2);
@@ -178,6 +227,14 @@ function drawObjects() {
         }
         ctx.restore();
     });
+
+    // Rasterizing active particle vectors to color coordinates
+    particles.forEach((p) => {
+        ctx.beginPath();
+        ctx.fillStyle = p.color;
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+    });
 }
 
 function drawUI() {
@@ -188,7 +245,7 @@ function drawUI() {
     ctx.textAlign = "center";
     ctx.fillText("FRUIT CATCHER", canvas.width / 2, 35);
 
-    // Left alignment raster text processing
+    // Left alignment raster text processing (Score & Lives Stack)
     ctx.textAlign = "left";
     ctx.fillText(`Score: ${score}`, 20, 40);
     ctx.fillText("Lives: ", 20, 75);
@@ -200,6 +257,20 @@ function drawUI() {
     }
     ctx.fillText(heartText, 95, 75);
 
+    // Right alignment raster text processing (High Score System Layout)
+    ctx.textAlign = "right";
+    let displayedHighScore = localStorage.getItem("highscore") || 0;
+    ctx.fillText(`High Score: ${displayedHighScore}`, canvas.width - 20, 40);
+
+    // Live feedback alert if player passes historical milestones
+    if (newHighScoreAchieved && !gameOver) {
+        ctx.save();
+        ctx.fillStyle = "yellow";
+        ctx.font = "bold 16px Arial";
+        ctx.fillText("NEW HIGH SCORE!", canvas.width - 20, 75);
+        ctx.restore();
+    }
+
     // Rasterizing floating numbers on data points
     popups.forEach(pop => {
         ctx.fillStyle = "lime";
@@ -209,9 +280,15 @@ function drawUI() {
 
     if (!gameStarted) {
         ctx.textAlign = "center";
+        
         ctx.fillStyle = "cyan";
-        ctx.font = "40px Arial";
-        ctx.fillText("Press SPACE to Start", canvas.width / 2, 250);
+        ctx.font = "36px Arial";
+        ctx.fillText("Press SPACE to Start", canvas.width / 2, 210);
+
+        ctx.fillStyle = "white";
+        ctx.font = "20px Arial";
+        ctx.fillText("Hold SHIFT to Move Quicker", canvas.width / 2, 270);
+        ctx.fillText("Press P to Pause the Game", canvas.width / 2, 310);
     }
 
     if (gameOver) {
@@ -248,26 +325,34 @@ function resetGame() {
     speed = 2;
     gameOver = false;
     gameStarted = true;
+    paused = false;
+    newHighScoreAchieved = false;
     objects.length = 0; 
     popups.length = 0;  
+    particles.length = 0; // Reset array states
     restartBtn.style.display = "none"; 
 }
 
-/*MAIN GAME LOOP ENGINE
-   Continually ticking through the pipeline frames*/
+/*MAIN GAME LOOP ENGINE Continually ticking through the pipeline frames*/
 function animate() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     drawBackground();
 
-    if (!gameOver && gameStarted) {
-        update(); // Call Geometry Step
+    if (!gameOver && gameStarted && !paused) {
+        update(); 
     }
 
-    // Call Rasterization Step
     drawBasket();
     drawObjects();
     drawUI();
+
+    if (paused) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = "yellow";
+        ctx.font = "40px Arial";
+        ctx.fillText("GAME PAUSED", canvas.width / 2, canvas.height / 2);
+    }
 
     requestAnimationFrame(animate);
 }
